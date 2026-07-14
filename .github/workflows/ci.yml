@@ -75,6 +75,23 @@ jobs:
       - name: Lint
         run: ./scripts/run-scenario.sh lint "${{ needs.prep.outputs.scenario }}"
 
+  gate:
+    # Matched by the "Build *" glob. Skipped in every scenario except
+    # 'approval', where the environment holds the run in waiting status
+    # until 'make approve RUN=<id>' or 'make reject RUN=<id>'.
+    # Run 'make setup-env' once, or the environment has no reviewers
+    # and the job starts immediately.
+    name: Build Gate
+    needs: prep
+    if: needs.prep.outputs.scenario == 'approval'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: approval-gate
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gate
+        run: ./scripts/run-scenario.sh gate "${{ needs.prep.outputs.scenario }}"
+
   unit-test:
     # Never matched by the bot; fails in fail-multi/all-fail to prove
     # the bot stays silent about non-matching job failures.

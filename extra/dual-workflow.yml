@@ -1,0 +1,24 @@
+# Second workflow with a job named "Build FE", same as in ci.yml.
+# Copied to .github/workflows/dual.yml by 'make pr SCENARIO=dual-workflow'.
+# The PR head then carries two runs whose job names collide while their
+# job IDs differ, and the two same-named jobs conclude differently
+# (ci.yml one passes, this one fails): an edge case for name matchers.
+name: Dual
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-fe-clone:
+    name: Build FE
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          LOG_LINES: "300"
+        run: ./scripts/run-scenario.sh fe fail-late

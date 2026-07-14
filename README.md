@@ -30,10 +30,12 @@ The `SCENARIO` file at the repo root selects the CI behavior: line 1 is
 the scenario name, line 2 is a timestamp so every scenario PR has a
 non-empty diff (and a guaranteed inline-comment anchor).
 `make pr SCENARIO=<name>` opens a PR whose branch sets that file; the
-`Prep` job reads it and fans out to four jobs with stable names:
+`Prep` job reads it and fans out to five jobs with stable names:
 `Build FE` (matched by `ExactJob("Build FE")` and the `Build *` glob),
-`Build BE` (glob only), `Lint` and `Unit Test` (never matched, control
-jobs). Switch the scenario on a live PR with
+`Build BE` (glob only), `Build Gate` (glob; skipped everywhere except
+the `approval` scenario, so every run also carries a skipped
+conclusion), `Lint` and `Unit Test` (never matched, control jobs).
+Switch the scenario on a live PR with
 `make scenario PR=<n> SCENARIO=<name>` (the push doubles as a head-change
 event), or re-run without a push via
 `make dispatch PR=<n> SCENARIO=<name>`.
@@ -53,14 +55,20 @@ event), or re-run without a push via
 | slow | noise, sleep 180, pass | pass | pass | pass | long in_progress, status transitions |
 | all-fail | exit 1 | exit 1 | exit 1 | exit 1 | multi-failure storm |
 | broken-workflow | pass | pass | pass | pass | extra broken.yml run: failure with zero jobs |
+| dual-workflow | pass | pass | pass | pass | extra dual.yml run with a second, failing "Build FE": job-name collision on one head |
+| approval | pass | pass | pass | pass | Build Gate holds the run in waiting status until `make approve` / `make reject` |
 | anything else | pass | pass | pass | pass | safe default |
+
+The `approval` scenario needs a one-time `make setup-env` (creates the
+`approval-gate` environment with you as required reviewer); without it
+the gate job starts immediately.
 
 ## Event cookbook
 
 | event | command |
 |---|---|
-| pr_discovered | `make pr-success` (or any `make pr-<scenario>`) |
-| pr_head_changed | `make push PR=N` or `make scenario PR=N SCENARIO=x` |
+| pr_discovered | `make pr-success` (or any `make pr-<scenario>`); `make storm N=5` for many at once |
+| pr_head_changed | `make push PR=N`, `make force-push PR=N` or `make scenario PR=N SCENARIO=x` |
 | pr_merged | `make merge PR=N` |
 | pr_closed / pr_reopened | `make close PR=N` / `make reopen PR=N` |
 | pr_converted_to_draft / pr_ready_for_review | `make draft PR=N` / `make ready PR=N` |
@@ -71,7 +79,11 @@ event), or re-run without a push via
 | job killed by timeout (conclusion cancelled) | `make pr-timeout` |
 | job_concluded(cancelled) | `make pr-cancel-me`, then `make cancel PR=N` |
 | job_restarted | `make pr-flaky`, wait for red, then `make rerun PR=N` |
+| job_concluded(skipped) | any scenario: Build Gate is skipped outside `approval` |
+| waiting run + deployment review | `make pr-approval`, then `make approve RUN=<id>` or `make reject RUN=<id>` |
 | zero-job broken run | `make pr-broken-workflow` |
+| job-name collision on one head | `make pr-dual-workflow` |
+| KindStatus (commit statuses, incl. state `error`) | `make commit-status PR=N STATE=pending`, then `STATE=success`/`failure`/`error` |
 
 Run `make help` for the full target list. Inspection helpers:
 `make runs PR=N` (runs for the PR head SHA, the same drill the bot does),
@@ -103,3 +115,14 @@ Run `make help` for the full target list. Inspection helpers:
   new PRs are unaffected either way.
 - Log retention expires after 90 days; that is the only way to observe
   expired-log errors and it cannot be reproduced quickly.
+
+## Not reproducible here
+
+- Check runs (KindCheck) and the `neutral` conclusion: only GitHub Apps
+  can create check runs. Commit statuses (`make commit-status`) are the
+  closest stand-in and cover KindStatus instead.
+- `timed_out`: a job killed by `timeout-minutes` concludes `cancelled`
+  (see above). The `timed_out` string stays untested.
+- `action_required`: needs a first-time contributor PR from a fork,
+  i.e. a second account or an org fork.
+- `stale`: produced internally by GitHub, not triggerable.

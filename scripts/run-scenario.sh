@@ -34,7 +34,8 @@ case "$SCENARIO:$ROLE" in
   fail-multi:be)   fail_with_log middle panic 300 ;;
   fail-multi:test) fail_with_log end test 300 ;;
 
-  # Job-level timeout-minutes (1) kills the job: conclusion timed_out.
+  # Job-level timeout-minutes (1) kills the job. GitHub reports
+  # conclusion cancelled with a max-execution-time annotation.
   timeout:fe)
     "$NOISE" --lines 200 --error-at none
     echo "sleeping until timeout-minutes kills the job"

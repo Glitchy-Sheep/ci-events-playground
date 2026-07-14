@@ -26,7 +26,7 @@ pr: ## Open a PR: SCENARIO=<name> [DRAFT=1]
 	@[ -n "$(SCENARIO)" ] || { echo "usage: make pr SCENARIO=<name> [DRAFT=1]" >&2; exit 1; }
 	git checkout main && git pull --ff-only
 	git checkout -b sbx/$(SCENARIO)-$(STAMP)
-	echo $(SCENARIO) > SCENARIO
+	printf '%s\nstamp: %s\n' "$(SCENARIO)" "$(STAMP)" > SCENARIO
 	@if [ "$(SCENARIO)" = "broken-workflow" ]; then \
 		cp broken/invalid-workflow.yml .github/workflows/broken.yml; \
 		git add .github/workflows/broken.yml; \
@@ -51,7 +51,7 @@ scenario: ## Switch scenario on an existing PR: PR=<n> SCENARIO=<name>
 	$(NEED_PR)
 	@[ -n "$(SCENARIO)" ] || { echo "usage: make scenario PR=<n> SCENARIO=<name>" >&2; exit 1; }
 	gh pr checkout $(PR)
-	echo $(SCENARIO) > SCENARIO
+	printf '%s\nstamp: %s\n' "$(SCENARIO)" "$(STAMP)" > SCENARIO
 	@if [ "$(SCENARIO)" = "broken-workflow" ]; then \
 		cp broken/invalid-workflow.yml .github/workflows/broken.yml; \
 		git add .github/workflows/broken.yml; \
@@ -70,13 +70,14 @@ review: ## Submit a review (pr_review_submitted): PR=<n> [VERDICT=comment|approv
 	$(NEED_PR)
 	gh pr review $(PR) --$(or $(VERDICT),comment) --body "$(or $(BODY),review ping $(STAMP))"
 
-review-comment: ## Inline review comment (pr_review_comment): PR=<n> [FILE=SCENARIO] [LINE=1] [BODY=text]
+# Default LINE=2: the stamp line of SCENARIO is always an added line in the diff.
+review-comment: ## Inline review comment (pr_review_comment): PR=<n> [FILE=SCENARIO] [LINE=2] [BODY=text]
 	$(NEED_PR)
 	gh api repos/{owner}/{repo}/pulls/$(PR)/comments \
 		-f body="$(or $(BODY),inline ping $(STAMP))" \
 		-f commit_id="$(HEADSHA)" \
 		-f path="$(or $(FILE),SCENARIO)" \
-		-F line=$(or $(LINE),1) \
+		-F line=$(or $(LINE),2) \
 		-f side=RIGHT
 
 reply: ## Reply in an inline thread (hardest detection case): PR=<n> COMMENT=<comment-id> [BODY=text]

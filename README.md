@@ -26,7 +26,9 @@ go run ./examples/ghwatch \
 
 ## How scenarios work
 
-The one-word `SCENARIO` file at the repo root selects the CI behavior.
+The `SCENARIO` file at the repo root selects the CI behavior: line 1 is
+the scenario name, line 2 is a timestamp so every scenario PR has a
+non-empty diff (and a guaranteed inline-comment anchor).
 `make pr SCENARIO=<name>` opens a PR whose branch sets that file; the
 `Prep` job reads it and fans out to four jobs with stable names:
 `Build FE` (matched by `ExactJob("Build FE")` and the `Build *` glob),

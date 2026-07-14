@@ -16,7 +16,10 @@ gh auth login          # once
 make init              # once: creates the GitHub repo and pushes main
 ```
 
-Point a bot at it, for example:
+Point a bot at it. The primary consumer is telegram-pr-watcher (see
+TESTING.md for the full playbook: local bot setup, Telegram
+subscriptions, per-scenario expectations). For raw SDK output without
+Telegram there is ghwatch:
 
 ```sh
 go run ./examples/ghwatch \

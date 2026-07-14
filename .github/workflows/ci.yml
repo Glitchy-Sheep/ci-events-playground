@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  # main only: a push to a PR branch would otherwise start two runs
+  # (push + pull_request) on the same head SHA and duplicate every job name.
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Scenario override (empty means read the SCENARIO file)"
+        required: false
+        default: ""
+
+# Rapid scenario switches cancel the superseded run.
+concurrency:
+  group: sbx-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# All jobs always run; job names stay stable across scenarios.
+# Behavior varies inside scripts/run-scenario.sh.
+jobs:
+  prep:
+    name: Prep
+    runs-on: ubuntu-latest
+    outputs:
+      scenario: ${{ steps.read.outputs.scenario }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        name: Read scenario
+        run: |
+          s="${{ inputs.scenario }}"
+          if [ -z "$s" ] && [ -f SCENARIO ]; then
+            s="$(head -n1 SCENARIO | tr -d '[:space:]')"
+          fi
+          s="${s:-success}"
+          echo "scenario=$s" >> "$GITHUB_OUTPUT"
+          echo "scenario: $s (attempt ${GITHUB_RUN_ATTEMPT})"
+
+  build-fe:
+    # Matched by ExactJob("Build FE") and the "Build *" glob.
+    name: Build FE
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ needs.prep.outputs.scenario == 'timeout' && 1 || 20 }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: ./scripts/run-scenario.sh fe "${{ needs.prep.outputs.scenario }}"
+
+  build-be:
+    # Matched by the "Build *" glob only.
+    name: Build BE
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: ./scripts/run-scenario.sh be "${{ needs.prep.outputs.scenario }}"
+
+  lint:
+    # Never matched by the bot; control job.
+    name: Lint
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        run: ./scripts/run-scenario.sh lint "${{ needs.prep.outputs.scenario }}"
+
+  unit-test:
+    # Never matched by the bot; fails in fail-multi/all-fail to prove
+    # the bot stays silent about non-matching job failures.
+    name: Unit Test
+    needs: prep
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: ./scripts/run-scenario.sh test "${{ needs.prep.outputs.scenario }}"

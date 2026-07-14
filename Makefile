@@ -192,14 +192,14 @@ approve: ## Approve the waiting approval-gate deployment: RUN=<run-id>
 	@envid=$$(gh api repos/{owner}/{repo}/environments/approval-gate --jq .id); \
 	gh api -X POST repos/{owner}/{repo}/actions/runs/$(RUN)/pending_deployments \
 		-F "environment_ids[]=$$envid" -f state=approved -f comment="approved from Makefile" \
-		--jq '.[].environment.name + ": approved"'
+		--jq '.[].environment + ": approved"'
 
 reject: ## Reject the waiting approval-gate deployment: RUN=<run-id>
 	@[ -n "$(RUN)" ] || { echo "usage: make reject RUN=<run-id>" >&2; exit 1; }
 	@envid=$$(gh api repos/{owner}/{repo}/environments/approval-gate --jq .id); \
 	gh api -X POST repos/{owner}/{repo}/actions/runs/$(RUN)/pending_deployments \
 		-F "environment_ids[]=$$envid" -f state=rejected -f comment="rejected from Makefile" \
-		--jq '.[].environment.name + ": rejected"'
+		--jq '.[].environment + ": rejected"'
 
 ##@ 🌐 External status (KindStatus)
 

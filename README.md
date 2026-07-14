@@ -61,7 +61,9 @@ event), or re-run without a push via
 
 The `approval` scenario needs a one-time `make setup-env` (creates the
 `approval-gate` environment with you as required reviewer); without it
-the gate job starts immediately.
+the gate job starts immediately. Observed: `make approve` lets the gate
+run and pass; `make reject` concludes the gate job (and the run) as
+`failure`.
 
 ## Event cookbook
 

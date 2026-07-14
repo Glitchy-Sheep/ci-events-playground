@@ -1,0 +1,15 @@
+# Valid YAML, invalid workflow schema: the job depends on a job that
+# does not exist. Copied to .github/workflows/broken.yml by
+# 'make pr SCENARIO=broken-workflow'. Every PR sync then produces a
+# workflow run with conclusion startup_failure and zero jobs.
+name: Broken
+
+on:
+  pull_request:
+
+jobs:
+  doomed:
+    runs-on: ubuntu-latest
+    needs: does-not-exist
+    steps:
+      - run: echo unreachable

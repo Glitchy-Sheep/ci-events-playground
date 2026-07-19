@@ -42,10 +42,10 @@ case "$SCENARIO:$ROLE" in
     sleep 300
     ;;
 
-  # Long sleep so 'make cancel PR=<n>' can hit an in_progress run.
+  # Long sleep so 'task cancel PR=<n>' can hit an in_progress run.
   cancel-me:fe)
     "$NOISE" --lines 200 --error-at none
-    echo "sleeping; cancel this run with: make cancel PR=<n>"
+    echo "sleeping; cancel this run with: task cancel PR=<n>"
     sleep 1800
     ;;
 

@@ -1,2 +1,2 @@
-PING log: each 'make push' appends a UTC timestamp
+PING log: each 'task push' appends a UTC timestamp
 Tue Jul 14 13:12:56 UTC 2026

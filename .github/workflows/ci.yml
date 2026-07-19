@@ -78,8 +78,8 @@ jobs:
   gate:
     # Matched by the "Build *" glob. Skipped in every scenario except
     # 'approval', where the environment holds the run in waiting status
-    # until 'make approve RUN=<id>' or 'make reject RUN=<id>'.
-    # Run 'make setup-env' once, or the environment has no reviewers
+    # until 'task approve RUN=<id>' or 'task reject RUN=<id>'.
+    # Run 'task setup-env' once, or the environment has no reviewers
     # and the job starts immediately.
     name: Build Gate
     needs: prep

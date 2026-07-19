@@ -1,5 +1,5 @@
 # Second workflow with a job named "Build FE", same as in ci.yml.
-# Copied to .github/workflows/dual.yml by 'make pr SCENARIO=dual-workflow'.
+# Copied to .github/workflows/dual.yml by 'task pr SCENARIO=dual-workflow'.
 # The PR head then carries two runs whose job names collide while their
 # job IDs differ, and the two same-named jobs conclude differently
 # (ci.yml one passes, this one fails): an edge case for name matchers.

@@ -1,0 +1,534 @@
+version: '3'
+
+vars:
+  NAME: '{{.NAME | default "ci-events-playground"}}'
+  STAMP:
+    sh: date +%y%m%d-%H%M%S
+  C_TITLE: '\033[1m'
+  C_GROUP: '\033[1;33m'
+  C_TARGET: '\033[36m'
+  C_VAR: '\033[33m'
+  C_OK: '\033[32m'
+  C_FAIL: '\033[31m'
+  C_DIM: '\033[2m'
+  C_END: '\033[0m'
+
+# PR=<n> и RUN=<id> почти везде необязательны: динамические vars _PR/_RUN
+# резолвят их через scripts/find-pr.sh и scripts/find-run.sh (последний
+# открытый sbx-PR / подходящий ран). Если кандидатов нет, задача падает
+# до выполнения cmds с подсказкой на русском.
+tasks:
+  ##@ 📖 Справка
+
+  default:
+    desc: "Показать эту справку"
+    silent: true
+    cmds:
+      - |
+        printf "\n{{.C_TITLE}}ci-events-playground{{.C_END}} - полигон для теста бота, следящего за PR-ами\n"
+        printf "\nКоманды открывают PR-ы с разными сценариями поведения CI (падения, таймауты,\nперезапуски, approval) и дергают PR-события - боту есть на что реагировать.\n"
+        printf "\nЗапуск: task {{.C_TARGET}}<команда>{{.C_END}} {{.C_VAR}}[ПЕРЕМЕННАЯ=значение ...]{{.C_END}}\n"
+        printf "Переменные в [скобках] необязательны: PR и RUN определяются сами\n(берется последний открытый sbx-PR / подходящий ран).\n"
+        awk '
+          /^  ##@/ { printf "\n{{.C_GROUP}}%s{{.C_END}}\n", substr($0, 7); next }
+          /^  [a-zA-Z0-9*_-]+:/ { name = $1; sub(/:.*$/, "", name) }
+          /^    desc: / { d = $0; sub(/^    desc:[ \t]*"?/, "", d); sub(/"$/, "", d)
+            printf "  {{.C_TARGET}}%-16s{{.C_END}} %s\n", name, d }
+        ' Taskfile.yml
+        printf "\n{{.C_GROUP}}Типичная сессия{{.C_END}}\n"
+        printf "  1. task pr-fail-late   открыть PR, где Build FE падает в конце большого лога\n"
+        printf "  2. смотреть, что бот прислал в Telegram (ожидания: task scenarios и TESTING.md)\n"
+        printf "  3. task push           докинуть коммит в тот же PR: событие pr_head_changed\n"
+        printf "  4. task cleanup        закрыть все тестовые PR и удалить ветки\n"
+        printf "\n{{.C_DIM}}Подробно о сценариях: task scenarios. Пошаговый e2e-тест бота: task guide.{{.C_END}}\n\n"
+
+  scenarios:
+    desc: "Разбор всех сценариев: что делает CI и что должен показать бот"
+    silent: true
+    cmds:
+      - |
+        printf "\n{{.C_TITLE}}Сценарии{{.C_END}}  {{.C_DIM}}запуск: task pr-<имя>; сменить на живом PR: task scenario SCENARIO=<имя>{{.C_END}}\n\n"
+        printf "  {{.C_OK}}success{{.C_END}}          все джобы зеленые (Build Gate skipped) - базовые события\n"
+        printf "                   job_discovered / job_concluded(success)\n"
+        printf "  {{.C_FAIL}}fail-early{{.C_END}}       Build FE: лог 40k строк, ошибка компиляции в начале (~2%%).\n"
+        printf "                   В хвосте лога ошибки НЕТ - бот покажет только шум; главный тест tail-стратегии\n"
+        printf "  {{.C_FAIL}}fail-middle{{.C_END}}      Build FE: лог 40k строк, panic в середине (~50%%). Ошибки в хвосте тоже НЕТ\n"
+        printf "  {{.C_FAIL}}fail-late{{.C_END}}        Build FE: лог 40k строк, падение теста в самом конце. Эталон:\n"
+        printf "                   ошибка видна в хвосте, строки FAIL подсвечены 🔴\n"
+        printf "  {{.C_FAIL}}fail-multi{{.C_END}}       падают Build FE + Build BE + Unit Test (короткие логи), Lint зеленый.\n"
+        printf "                   Unit Test ботом не матчится - о нем бот должен молчать\n"
+        printf "  {{.C_FAIL}}timeout{{.C_END}}          Build FE убит timeout-minutes 1: conclusion cancelled (не timed_out!), ~60-70 с\n"
+        printf "  {{.C_FAIL}}cancel-me{{.C_END}}        Build FE спит 30 мин; отмени через 'task cancel' - смешанные заключения\n"
+        printf "                   на одном head: cancelled на FE, success на BE\n"
+        printf "  {{.C_FAIL}}flaky{{.C_END}}            Build FE падает с 1-й попытки, проходит после 'task rerun' (job_restarted)\n"
+        printf "  {{.C_OK}}slow{{.C_END}}             Build FE спит 3 мин посреди лога: длинная фаза in_progress\n"
+        printf "  {{.C_FAIL}}all-fail{{.C_END}}         все джобы exit 1: шторм падений, 4 сообщения с логами разом\n"
+        printf "  {{.C_FAIL}}broken-workflow{{.C_END}}  лишний ран без единой джобы, conclusion failure; jobs-подписка\n"
+        printf "                   его не видит, нужен watcher уровня workflow\n"
+        printf "  {{.C_FAIL}}dual-workflow{{.C_END}}    второй ран с конфликтующим именем джобы 'Build FE', который падает:\n"
+        printf "                   бот должен показать ОБА 'Build FE' - зеленый и красный\n"
+        printf "  {{.C_VAR}}approval{{.C_END}}         Build Gate ждет ручного одобрения environment-а approval-gate:\n"
+        printf "                   'task approve' / 'task reject' (одноразово перед этим: task setup-env)\n"
+        printf "\n  Build Gate во всех не-approval сценариях skipped: покрытие заключения skipped.\n"
+        printf "  Недостижимо здесь: timed_out, neutral/action_required и check runs (KindCheck) -\n"
+        printf "  для них нужен GitHub App или второй аккаунт.\n\n"
+
+  guide:
+    desc: "Пошаговый план e2e-теста telegram-pr-watcher: от .env до уборки"
+    silent: true
+    cmds:
+      - |
+        printf "\n{{.C_TITLE}}E2E-тест telegram-pr-watcher{{.C_END}}  {{.C_DIM}}подробности и ID кейсов: TESTING.md{{.C_END}}\n"
+        printf "\nРаскладка: терминал 1 - бот, терминал 2 - этот репозиторий, Telegram - наблюдение.\n"
+        printf "\n{{.C_GROUP}}Шаг 0. Одноразовая подготовка{{.C_END}}\n"
+        printf "  1. Создай у @BotFather {{.C_TITLE}}отдельного тестового бота{{.C_END}}. Прод-токен занят прод-инстансом:\n"
+        printf "     второй процесс с тем же токеном получит 409 Conflict и будет красть апдейты.\n"
+        printf "  2. В ../telegram-pr-watcher: cp .env.example .env и заполни (prod.env не трогай):\n"
+        printf "       TELEGRAM_BOT_TOKEN=<токен тестового бота>\n"
+        printf "       GITHUB_TOKEN=<gh auth token>       # repo-scope: кнопка rerun будет работать\n"
+        printf "       TELEGRAM_ADMIN_IDS=<твой tg id>    # свой id подскажет @userinfobot\n"
+        printf "       TELEGRAM_SUPPORT_IDS=<твой tg id>\n"
+        printf "       POLL_INTERVAL=5s                   # минимум SDK; для живых тестов то что надо\n"
+        printf "       DB_PATH=./data/test.db             # дев-базу data/prwatcher.db не трогаем\n"
+        printf "  3. Здесь: {{.C_TARGET}}task setup-env{{.C_END}} - environment для сценария approval (сессия 5).\n"
+        printf "\n{{.C_GROUP}}Шаг 1. Запуск бота (терминал 1){{.C_END}}\n"
+        printf "  cd ../telegram-pr-watcher && rm -f data/test.db && task run\n"
+        printf "  Чистый прогон = удалить data/test.db перед стартом. Старую базу с подписками\n"
+        printf "  не подкладывай: бот выдаст лавину \"новых\" событий по всему бэклогу.\n"
+        printf "\n{{.C_GROUP}}Шаг 2. Подписка в Telegram{{.C_END}}\n"
+        printf "  /start, затем /subscribe: автор Glitchy-Sheep, репо ci-events-playground,\n"
+        printf "  вид 🔧 jobs со спекой 'glob:Build *' (покрывает Build FE/BE/Gate) и/или 📋 PR-статус.\n"
+        printf "  Точечно на один PR: вставь его URL или Glitchy-Sheep/ci-events-playground#N.\n"
+        printf "  Сразу придет снапшот текущего состояния - это уже первый тест.\n"
+        printf "\n{{.C_GROUP}}Сессия 1. Джобы и supersede{{.C_END}}\n"
+        printf "  {{.C_TARGET}}task pr-success{{.C_END}}   цепочка: в очереди -> выполняется -> ✅ по каждой матчащейся\n"
+        printf "                    джобе; каждое состояние - НОВОЕ сообщение, предыдущее удаляется,\n"
+        printf "                    если в /settings включена очистка (проверь оба положения).\n"
+        printf "                    Build Gate придет как skipped.\n"
+        printf "  {{.C_TARGET}}task push{{.C_END}}         свежий head: новый набор джоб поверх старых\n"
+        printf "  {{.C_TARGET}}task merge{{.C_END}}        если есть 📋: \"влит\", подписка на PR уходит из /subscriptions\n"
+        printf "\n{{.C_GROUP}}Сессия 2. Хвост лога при падениях - главная{{.C_END}}\n"
+        printf "  {{.C_TARGET}}task pr-fail-late{{.C_END}}                   ошибка в конце лога: ВИДНА в хвосте, FAIL с 🔴\n"
+        printf "  {{.C_TARGET}}task scenario SCENARIO=fail-early{{.C_END}}   ошибка в начале: хвост из шума, в сообщении ее НЕТ\n"
+        printf "  {{.C_TARGET}}task scenario SCENARIO=fail-middle{{.C_END}}  panic в середине: то же самое\n"
+        printf "  Отсутствие ошибки - известное ограничение tail-стратегии, ради него полигон и строился.\n"
+        printf "  Сравни с правдой: task jobs, затем task log JOB=<id> | grep -nE 'panic:|undefined:'.\n"
+        printf "  Проверь маркировку \"…(обрезано)\" и заголовок \"Хвост лога · обрезано\".\n"
+        printf "\n{{.C_GROUP}}Сессия 3. Кнопка rerun и перезапуски{{.C_END}}\n"
+        printf "  {{.C_TARGET}}task pr-flaky{{.C_END}}     попытка 1 падает. В сообщении о падении тапни кнопку перезапуска:\n"
+        printf "                    быстрый ack -> \"перезапущена\" (job_restarted) -> ✅ attempt 2.\n"
+        printf "                    Из терминала то же самое: task rerun. Отдельно проверь read-only\n"
+        printf "                    токен: кнопка должна честно сказать, что перезапуск недоступен.\n"
+        printf "\n{{.C_GROUP}}Сессия 4. PR-события (📋) и self-mute{{.C_END}}\n"
+        printf "  Все события полигона создаешь ты сам. Если в /github привязан логин Glitchy-Sheep,\n"
+        printf "  бот заглушит твои события - сначала проверь тишину: task comment, task review.\n"
+        printf "  Потом отвяжи логин и прогони:\n"
+        printf "  {{.C_TARGET}}task review{{.C_END}}              \"ревью\": вердикт comment + текст\n"
+        printf "  {{.C_TARGET}}task review-comment{{.C_END}}      inline-комментарий: file:line + ссылка на тред\n"
+        printf "  {{.C_TARGET}}task reply COMMENT=<id>{{.C_END}}  ответ в треде - самый сложный кейс детекции\n"
+        printf "  {{.C_TARGET}}task draft{{.C_END}} / {{.C_TARGET}}task ready{{.C_END}}   переведен в черновик / готов к ревью\n"
+        printf "  {{.C_TARGET}}task close{{.C_END}} / {{.C_TARGET}}task reopen{{.C_END}}  закрыт без мержа / переоткрыт (подписка живет)\n"
+        printf "  {{.C_TARGET}}task merge{{.C_END}}               \"влит\" + кто влил; подписка retired\n"
+        printf "  PR-события не supersede-ятся (это факты таймлайна) - история сообщений сохраняется.\n"
+        printf "\n{{.C_GROUP}}Сессия 5. Kinds и краевые случаи{{.C_END}}\n"
+        printf "  {{.C_TARGET}}task pr-timeout{{.C_END}}                   джоба убита таймаутом: cancelled, \"упала · таймаут\"/🚫\n"
+        printf "  {{.C_TARGET}}task pr-cancel-me{{.C_END}}                 затем task cancel: 🚫 на FE, ✅ BE на том же head\n"
+        printf "  {{.C_TARGET}}task commit-status STATE=pending{{.C_END}}  KindStatus входит в jobs-подписку\n"
+        printf "  {{.C_TARGET}}task commit-status STATE=error{{.C_END}}    терминальный сразу, без лога; rerun: \"на стороне CI\"\n"
+        printf "  {{.C_TARGET}}task pr-broken-workflow{{.C_END}}           ран без джоб: jobs-подписка молчит - это правильно\n"
+        printf "  {{.C_TARGET}}task pr-dual-workflow{{.C_END}}             два 'Build FE' с разными job ID: должны прийти ОБА\n"
+        printf "  {{.C_TARGET}}task pr-approval{{.C_END}}                  ран висит в waiting: как бот покажет гейт?\n"
+        printf "                                    затем task approve (пройдет) или task reject (failure)\n"
+        printf "\n{{.C_GROUP}}Сессия 6. Нагрузка и статус{{.C_END}}\n"
+        printf "  {{.C_TARGET}}task storm N=5{{.C_END}}     много PR за один цикл опроса: снапшоты, очередь доставки\n"
+        printf "  {{.C_TARGET}}task pr-all-fail{{.C_END}}   шторм падений: 4 сообщения с логами разом\n"
+        printf "  Во время активных джоб посмотри /status и /subscriptions; следи за логом бота.\n"
+        printf "\n{{.C_GROUP}}Финал{{.C_END}}\n"
+        printf "  {{.C_TARGET}}task cleanup{{.C_END}}       закрыть все sbx/* PR и удалить ветки\n"
+        printf "  В Telegram: /subscriptions - убрать тестовые подписки, чтобы бот не поллил зря.\n"
+        printf "\n{{.C_DIM}}Если непонятно, бот сломан или SDK: тот же полигон смотрится голым ghwatch\n(../github-build-robot, examples/ghwatch) - сырые события без Telegram.{{.C_END}}\n\n"
+
+  ##@ ⚙️  Настройка
+
+  init:
+    desc: "Одноразово: создать публичный репозиторий на GitHub из этой папки и запушить main"
+    cmds:
+      - git init -b main 2>/dev/null || true
+      - git add -A
+      - git commit -m "Initial playground setup"
+      - gh repo create {{.NAME}} --public --source=. --remote=origin --push
+
+  setup-env:
+    desc: "Одноразово: environment approval-gate с тобой как обязательным ревьюером (для сценария approval)"
+    silent: true
+    cmds:
+      - |
+        uid=$(gh api user --jq .id)
+        printf '{"reviewers":[{"type":"User","id":%s}]}' "$uid" |
+          gh api -X PUT repos/{owner}/{repo}/environments/approval-gate --input - \
+            --jq '"environment " + .name + " настроен"'
+
+  ##@ 🚀 Сценарные PR
+
+  pr:
+    desc: "Открыть сценарный PR: [SCENARIO=success] [DRAFT=1] (имена: task scenarios)"
+    vars:
+      SCENARIO: '{{.SCENARIO | default "success"}}'
+    cmds:
+      - 'echo "открываю PR со сценарием {{.SCENARIO}}"'
+      - git checkout main && git pull --ff-only
+      - git checkout -b sbx/{{.SCENARIO}}-{{.STAMP}}
+      - ./scripts/apply-scenario.sh {{.SCENARIO}} {{.STAMP}}
+      - 'git commit -m "scenario: {{.SCENARIO}}"'
+      - git push -u origin HEAD
+      - 'gh pr create --title "sbx: {{.SCENARIO}} {{.STAMP}}" --body "Scenario: {{.SCENARIO}}" {{if .DRAFT}}--draft{{end}}'
+      - git checkout main
+
+  pr-*:
+    desc: "Шорткат: task pr-fail-early == task pr SCENARIO=fail-early"
+    cmds:
+      - task: pr
+        vars:
+          SCENARIO: '{{index .MATCH 0}}'
+
+  storm:
+    desc: "Открыть несколько PR подряд (нагрузка на discovery): [N=3] [SCENARIO=success]"
+    silent: true
+    vars:
+      N: '{{.N | default 3}}'
+      SCENARIO: '{{.SCENARIO | default "success"}}'
+    cmds:
+      - |
+        for i in $(seq 1 {{.N}}); do
+          task pr SCENARIO={{.SCENARIO}} || exit 1
+          sleep 1
+        done
+
+  scenario:
+    desc: "Сменить сценарий на живом PR (заодно событие pr_head_changed): SCENARIO=<имя> [PR=<n>]"
+    preconditions:
+      - sh: '[ -n "{{.SCENARIO}}" ]'
+        msg: "Укажи сценарий: task scenario SCENARIO=fail-late (список: task scenarios)"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr checkout {{._PR}}
+      - ./scripts/apply-scenario.sh {{.SCENARIO}} {{.STAMP}}
+      - 'git commit -m "switch scenario: {{.SCENARIO}}"'
+      - git push
+      - git checkout main
+
+  dispatch:
+    desc: "Перезапустить CI на ветке PR без пуша (workflow_dispatch): [PR=<n>] [SCENARIO=<имя>]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      HEADBRANCH:
+        sh: gh pr view {{._PR}} --json headRefName -q .headRefName
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh workflow run ci.yml --ref "{{.HEADBRANCH}}" {{if .SCENARIO}}-f scenario={{.SCENARIO}}{{end}}
+
+  ##@ 🔀 Смена head
+
+  push:
+    desc: "Запушить ping-коммит в ветку PR - событие pr_head_changed: [PR=<n>]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr checkout {{._PR}}
+      - date -u >> PING
+      - git commit -am "ping {{.STAMP}}"
+      - git push
+      - git checkout main
+
+  force-push:
+    desc: "Amend + force-push: новый head SHA без нового коммита: [PR=<n>]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr checkout {{._PR}}
+      - git commit --amend --no-edit
+      - git push -f
+      - git checkout main
+
+  ##@ 💬 Обсуждение
+
+  comment:
+    desc: "Обычный комментарий в PR: [PR=<n>] [BODY=текст]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      BODY: '{{.BODY | default (printf "ping from Taskfile at %s" .STAMP)}}'
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr comment {{._PR}} --body "{{.BODY}}"
+
+  review:
+    desc: "Ревью PR (pr_review_submitted): [PR=<n>] [VERDICT=comment|approve|request-changes] [BODY=текст]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      VERDICT: '{{.VERDICT | default "comment"}}'
+      BODY: '{{.BODY | default (printf "review ping %s" .STAMP)}}'
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr review {{._PR}} --{{.VERDICT}} --body "{{.BODY}}"
+
+  review-comment:
+    desc: "Inline-комментарий к строке диффа (pr_review_comment): [PR=<n>] [FILE=SCENARIO] [LINE=2] [BODY=текст]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      HEADSHA:
+        sh: gh pr view {{._PR}} --json headRefOid -q .headRefOid
+      FILE: '{{.FILE | default "SCENARIO"}}'
+      # Дефолт LINE=2: строка stamp в SCENARIO всегда добавлена в диффе.
+      LINE: '{{.LINE | default 2}}'
+      BODY: '{{.BODY | default (printf "inline ping %s" .STAMP)}}'
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - >
+        gh api repos/{owner}/{repo}/pulls/{{._PR}}/comments
+        -f body="{{.BODY}}"
+        -f commit_id="{{.HEADSHA}}"
+        -f path="{{.FILE}}"
+        -F line={{.LINE}}
+        -f side=RIGHT
+
+  reply:
+    desc: "Ответ в inline-треде - самый сложный кейс детекции: COMMENT=<id> [PR=<n>] [BODY=текст]"
+    preconditions:
+      - sh: '[ -n "{{.COMMENT}}" ]'
+        msg: "Нужен ID inline-комментария: task reply COMMENT=<id>. ID есть в JSON-ответе task review-comment (поле id)."
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      BODY: '{{.BODY | default (printf "reply ping %s" .STAMP)}}'
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh api repos/{owner}/{repo}/pulls/{{._PR}}/comments/{{.COMMENT}}/replies -f body="{{.BODY}}"
+
+  ##@ 📦 Жизненный цикл PR
+
+  draft:
+    desc: "Перевести PR в черновик (pr_converted_to_draft): [PR=<n>]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr ready {{._PR}} --undo
+
+  ready:
+    desc: "Вернуть PR из черновика (pr_ready_for_review): [PR=<n>]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr ready {{._PR}}
+
+  close:
+    desc: "Закрыть PR без мержа (pr_closed): [PR=<n>]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr close {{._PR}}
+
+  reopen:
+    desc: "Переоткрыть закрытый PR (pr_reopened): [PR=<n>] (дефолт: последний закрытый sbx-PR)"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}" closed
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr reopen {{._PR}}
+
+  merge:
+    desc: "Squash-мерж PR (pr_merged): [PR=<n>]. Мерж не-success сценария сделает ран main красным"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh pr merge {{._PR}} --squash --delete-branch
+
+  ##@ 🔁 Управление ранами
+
+  cancel:
+    desc: "Отменить активный ран ветки PR - заключение cancelled: [PR=<n>]"
+    silent: true
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      HEADBRANCH:
+        sh: gh pr view {{._PR}} --json headRefName -q .headRefName
+    cmds:
+      - |
+        echo "работаю с PR #{{._PR}} (ветка {{.HEADBRANCH}})"
+        id=$(gh run list --branch "{{.HEADBRANCH}}" --json databaseId,status \
+          --jq '[.[] | select(.status=="in_progress" or .status=="queued")][0].databaseId')
+        [ -n "$id" ] && [ "$id" != "null" ] || { echo "на ветке {{.HEADBRANCH}} нет активного рана" >&2; exit 1; }
+        echo "отменяю ран $id"; gh run cancel $id
+
+  rerun:
+    desc: "Перезапустить упавшие джобы последнего красного рана (job_restarted): [PR=<n>]"
+    silent: true
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      HEADBRANCH:
+        sh: gh pr view {{._PR}} --json headRefName -q .headRefName
+    cmds:
+      - |
+        echo "работаю с PR #{{._PR}} (ветка {{.HEADBRANCH}})"
+        id=$(gh run list --branch "{{.HEADBRANCH}}" --status failure --limit 1 \
+          --json databaseId --jq '.[0].databaseId')
+        [ -n "$id" ] && [ "$id" != "null" ] || { echo "на ветке {{.HEADBRANCH}} нет упавшего рана" >&2; exit 1; }
+        echo "перезапускаю упавшие джобы рана $id"; gh run rerun $id --failed
+
+  rerun-all:
+    desc: "Перезапустить все джобы рана: RUN=<id>"
+    preconditions:
+      - sh: '[ -n "{{.RUN}}" ]'
+        msg: "Укажи ран: task rerun-all RUN=<id> (ID покажет task runs)"
+    cmds:
+      - gh run rerun {{.RUN}}
+
+  approve:
+    desc: "Одобрить ждущий approval-gate деплой: [RUN=<id>] (дефолт: ран в статусе waiting)"
+    silent: true
+    vars:
+      _RUN:
+        sh: ./scripts/find-run.sh "{{.RUN}}" waiting
+    cmds:
+      - |
+        echo "работаю с раном {{._RUN}}"
+        envid=$(gh api repos/{owner}/{repo}/environments/approval-gate --jq .id)
+        gh api -X POST repos/{owner}/{repo}/actions/runs/{{._RUN}}/pending_deployments \
+          -F "environment_ids[]=$envid" -f state=approved -f comment="approved from Taskfile" \
+          --jq '.[].environment + ": approved"'
+
+  reject:
+    desc: "Отклонить ждущий approval-gate деплой (даст failure): [RUN=<id>]"
+    silent: true
+    vars:
+      _RUN:
+        sh: ./scripts/find-run.sh "{{.RUN}}" waiting
+    cmds:
+      - |
+        echo "работаю с раном {{._RUN}}"
+        envid=$(gh api repos/{owner}/{repo}/environments/approval-gate --jq .id)
+        gh api -X POST repos/{owner}/{repo}/actions/runs/{{._RUN}}/pending_deployments \
+          -F "environment_ids[]=$envid" -f state=rejected -f comment="rejected from Taskfile" \
+          --jq '.[].environment + ": rejected"'
+
+  ##@ 🌐 Внешние статусы (KindStatus)
+
+  commit-status:
+    desc: "Выставить commit status на head PR: STATE=pending|success|failure|error [PR=<n>] [CONTEXT=external-ci] [DESC=текст]"
+    preconditions:
+      - sh: '[ -n "{{.STATE}}" ]'
+        msg: "Укажи статус: task commit-status STATE=pending (или success/failure/error)"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      HEADSHA:
+        sh: gh pr view {{._PR}} --json headRefOid -q .headRefOid
+      CONTEXT: '{{.CONTEXT | default "external-ci"}}'
+      DESC: '{{.DESC | default (printf "playground status %s" .STAMP)}}'
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - >
+        gh api repos/{owner}/{repo}/statuses/{{.HEADSHA}}
+        -f state={{.STATE}}
+        -f context="{{.CONTEXT}}"
+        -f description="{{.DESC}}"
+        --jq '.context + ": " + .state'
+
+  ##@ 🔍 Инспекция
+
+  runs:
+    desc: "Раны на head SHA PR - тот же запрос, что делает бот: [PR=<n>]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      HEADSHA:
+        sh: gh pr view {{._PR}} --json headRefOid -q .headRefOid
+    cmds:
+      - 'echo "работаю с PR #{{._PR}}"'
+      - gh run list --commit "{{.HEADSHA}}" --json databaseId,workflowName,event,status,conclusion,attempt
+
+  jobs:
+    desc: "Заключения джоб рана: [RUN=<id>] (дефолт: последний ран последнего sbx-PR)"
+    vars:
+      _RUN:
+        sh: ./scripts/find-run.sh "{{.RUN}}" latest
+    cmds:
+      - 'echo "работаю с раном {{._RUN}}"'
+      - gh run view {{._RUN}} --json jobs --jq '.jobs[] | {name, status, conclusion}'
+
+  log:
+    desc: "Скачать сырой лог джобы (полный, без обрезки веб-интерфейса): JOB=<id>"
+    preconditions:
+      - sh: '[ -n "{{.JOB}}" ]'
+        msg: "Укажи джобу: task log JOB=<id> (ID покажет task jobs)"
+    cmds:
+      - gh api repos/{owner}/{repo}/actions/jobs/{{.JOB}}/logs
+
+  watch:
+    desc: "Следить в терминале за последним раном ветки PR: [PR=<n>]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+      HEADBRANCH:
+        sh: gh pr view {{._PR}} --json headRefName -q .headRefName
+    cmds:
+      - 'echo "работаю с PR #{{._PR}} (ветка {{.HEADBRANCH}})"'
+      - |
+        gh run watch $(gh run list --branch "{{.HEADBRANCH}}" --limit 1 \
+          --json databaseId --jq '.[0].databaseId')
+
+  status:
+    desc: "Мои открытые PR и последние 15 ранов"
+    cmds:
+      - gh pr list --author "@me"
+      - gh run list --limit 15
+
+  open:
+    desc: "Открыть PR в браузере: [PR=<n>]"
+    vars:
+      _PR:
+        sh: ./scripts/find-pr.sh "{{.PR}}"
+    cmds:
+      - gh pr view {{._PR}} --web
+
+  ##@ 🧹 Уборка
+
+  cleanup:
+    desc: "Закрыть все sbx/* PR и удалить их ветки (локальные и на origin)"
+    silent: true
+    cmds:
+      - |
+        for n in $(gh pr list --json number,headRefName \
+            --jq '.[] | select(.headRefName | startswith("sbx/")) | .number'); do
+          echo "закрываю PR #$n"; gh pr close $n --delete-branch
+        done
+      - git checkout main >/dev/null 2>&1 || true
+      - git fetch -p origin
+      - |
+        for b in $(git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/sbx/*' | sed 's|^origin/||'); do
+          echo "удаляю ветку $b на origin"; git push origin --delete "$b" || true
+        done
+      - |
+        locals=$(git for-each-ref --format='%(refname:short)' 'refs/heads/sbx/*')
+        [ -z "$locals" ] || git branch -D $locals
